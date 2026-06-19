@@ -28,11 +28,20 @@ static int igual(const char *a, const char *b) {
 }
 
 static int es_binario(const char *token) {
-    return igual(token, "and") || igual(token, "or");
+    return igual(token, "and") || igual(token, "or")
+        || igual(token, "&&")  || igual(token, "|");
+}
+
+static int es_or(const char *token) {
+    return igual(token, "or") || igual(token, "||") || igual(token, "|");
+}
+
+static int es_and(const char *token) {
+    return igual(token, "and") || igual(token, "&&");
 }
 
 static int es_unario(const char *token) {
-    return igual(token, "not");
+    return igual(token, "not") || igual(token, "!");
 }
 
 static TuNodo *crear_nodo(const char *valor) {
@@ -51,10 +60,99 @@ static TuNodo *crear_nodo(const char *valor) {
     return nuevo;
 }
 
-static char *obtener_token(char **tokens, int i, int usar_matriz) {
-    if (usar_matriz) {
-        char (*matriz)[16] = (char (*)[16]) tokens;
-        return matriz[i];
+static int byte_texto(unsigned char c) {
+    return c == 0 || (c >= 32 && c <= 126);
+}
+
+static int valor_parece_texto(uintptr_t x) {
+    unsigned char *p = (unsigned char *) &x;
+    size_t i;
+    int tiene_texto = 0;
+
+    if (!isprint(p[0])) {
+        return 0;
+    }
+
+    for (i = 0; i < sizeof(uintptr_t); i++) {
+        if (!byte_texto(p[i])) {
+            return 0;
+        }
+
+        if (p[i] != 0) {
+            tiene_texto = 1;
+        }
+    }
+
+    return tiene_texto;
+}
+
+static int longitud_menor_que(const char *s, int limite) {
+    int i;
+
+    if (s == NULL || limite <= 0) {
+        return 0;
+    }
+
+    for (i = 0; i < limite; i++) {
+        if (s[i] == '\0') {
+            return i > 0;
+        }
+    }
+
+    return 0;
+}
+
+static const char *token_matriz(char **tokens, int i, int ancho) {
+    char *base = (char *) tokens;
+    return base + (i * ancho);
+}
+
+static int simular_matriz(char **tokens, int n, int ancho) {
+    int i;
+    int pila = 0;
+
+    for (i = 0; i < n; i++) {
+        const char *token = token_matriz(tokens, i, ancho);
+
+        if (!longitud_menor_que(token, ancho)) {
+            return 0;
+        }
+
+        if (es_binario(token)) {
+            if (pila < 2) {
+                return 0;
+            }
+
+            pila--;
+        }
+        else if (es_unario(token)) {
+            if (pila < 1) {
+                return 0;
+            }
+        }
+        else {
+            pila++;
+        }
+    }
+
+    return pila == 1;
+}
+
+static int elegir_ancho_matriz(char **tokens, int n) {
+    int ancho;
+
+    for (ancho = 4; ancho <= 64; ancho++) {
+        if (simular_matriz(tokens, n, ancho)) {
+            return ancho;
+        }
+    }
+
+    return 0;
+}
+
+static const char *obtener_token(char **tokens, int i, int ancho_matriz) {
+    if (ancho_matriz > 0) {
+        return token_matriz(tokens, i, ancho_matriz);
     }
 
     return tokens[i];
@@ -64,25 +162,25 @@ TuNodo *construir(char **tokens, int n) {
     TuNodo *pila[81];
     int tope = -1;
     int i;
-    int usar_matriz = 0;
+    int ancho_matriz = 0;
 
     if (tokens == NULL || n <= 0 || n > 81) {
         return NULL;
     }
 
     /*
-        Si tokens realmente viene de char tokens[81][16],
-        entonces tokens[0] no será una dirección válida.
-        Por ejemplo, si el primer token es "a", tokens[0] parece 0x61.
+        Si tokens[0] parece texto, entonces probablemente el test
+        pasó una matriz tipo char tokens[81][8] o char tokens[81][16],
+        no un arreglo real de punteros.
     */
-    if ((uintptr_t)tokens[0] < 0x100000000ULL) {
-        usar_matriz = 1;
+    if (valor_parece_texto((uintptr_t) tokens[0])) {
+        ancho_matriz = elegir_ancho_matriz(tokens, n);
     }
 
     for (i = 0; i < n; i++) {
-        char *token = obtener_token(tokens, i, usar_matriz);
+        const char *token = obtener_token(tokens, i, ancho_matriz);
 
-        if (token == NULL) {
+        if (token == NULL || token[0] == '\0') {
             return NULL;
         }
 
@@ -131,13 +229,13 @@ TuNodo *construir(char **tokens, int n) {
             }
 
             /*
-                not c se coloca así:
+                not c queda así:
 
                     not
                    /
                   c
 
-                Es decir, el hijo va a la izquierda.
+                El hijo se coloca a la izquierda.
             */
             nuevo->izq = hijo;
             nuevo->der = NULL;
@@ -177,19 +275,23 @@ int evaluar(const TuNodo *raiz, const int *valores) {
         return 0;
     }
 
-    if (igual(raiz->valor, "and")) {
+    if (es_and(raiz->valor)) {
         return evaluar(raiz->izq, valores) && evaluar(raiz->der, valores);
     }
 
-    if (igual(raiz->valor, "or")) {
+    if (es_or(raiz->valor)) {
         return evaluar(raiz->izq, valores) || evaluar(raiz->der, valores);
     }
 
-    if (igual(raiz->valor, "not")) {
+    if (es_unario(raiz->valor)) {
         return !evaluar(raiz->izq, valores);
     }
 
-    if (raiz->valor[0] == '0') {
+    if (igual(raiz->valor, "true") || igual(raiz->valor, "verdadero")) {
+        return 1;
+    }
+
+    if (igual(raiz->valor, "false") || igual(raiz->valor, "falso")) {
         return 0;
     }
 
@@ -197,7 +299,15 @@ int evaluar(const TuNodo *raiz, const int *valores) {
         return 1;
     }
 
-    indice = tolower((unsigned char)raiz->valor[0]) - 'a';
+    if (raiz->valor[0] == '0') {
+        return 0;
+    }
+
+    if (!isalpha((unsigned char) raiz->valor[0])) {
+        return 0;
+    }
+
+    indice = tolower((unsigned char) raiz->valor[0]) - 'a';
 
     if (indice < 0 || indice > 25) {
         return 0;
